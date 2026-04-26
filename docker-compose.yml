@@ -1,0 +1,9 @@
+services:
+  neo4j:
+    image: neo4j:latest
+    container_name: neo4j_similarity
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER}/${NEO4J_PASSWORD}

@@ -1,0 +1,7 @@
+neo4j
+sentence-transformers
+numpy
+python-dotenv
+yake
+pandas
+matplotlib
