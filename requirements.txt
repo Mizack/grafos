@@ -5,3 +5,7 @@ python-dotenv
 yake
 pandas
 matplotlib
+chalice
+transformers
+torch
+accelerate
