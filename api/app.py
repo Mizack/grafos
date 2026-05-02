@@ -62,7 +62,7 @@ qwen_pipeline = pipeline(
 # =====================================================================
 # Lógica do RAG (Retrieval-Augmented Generation)
 # =====================================================================
-def recuperar_contexto_neo4j(pergunta, top_k=3):
+def recuperar_contexto_neo4j(pergunta, top_k=5):
     """
     Passo 1: RETRIEVAL
     Transforma a pergunta em vetor e busca os artigos mais similares no grafo.
@@ -70,12 +70,13 @@ def recuperar_contexto_neo4j(pergunta, top_k=3):
     vetor_pergunta = embedding_model.encode(pergunta).tolist()
     
     with driver.session() as session:
-        # Busca vetorial utilizando o índice que você já criou ('article_embeddings')
+        # Busca um pool maior (15) para ordenar pelas mais recentes primeiro, garantindo a atualidade
         result = session.run("""
-            CALL db.index.vector.queryNodes('article_embeddings', $top_k, $embedding)
+            CALL db.index.vector.queryNodes('article_embeddings', 15, $embedding)
             YIELD node AS art, score
-            RETURN art.id AS id, art.title AS titulo, art.description AS desc, art.content AS conteudo, score
-            ORDER BY score DESC
+            RETURN art.id AS id, art.title AS titulo, art.description AS desc, art.content AS conteudo, score, toString(art.publishedAt) AS data_pub
+            ORDER BY data_pub DESC, score DESC
+            LIMIT $top_k
         """, top_k=top_k, embedding=vetor_pergunta)
         
         contextos_str = []
@@ -87,12 +88,14 @@ def recuperar_contexto_neo4j(pergunta, top_k=3):
             noticias.append({
                 "id": record["id"],
                 "titulo": record["titulo"],
-                "score": record["score"]
+                "score": record["score"],
+                "data_publicacao": record["data_pub"]
             })
             titulo = record["titulo"]
             conteudo = record["conteudo"] or record["desc"]
+            data_pub = record["data_pub"]
             # Montamos um bloco de texto que será a "verdade" para a IA ler
-            contextos_str.append(f"TÍTULO DO ARTIGO: {titulo}\nCONTEÚDO: {conteudo}\n")
+            contextos_str.append(f"DATA DA NOTÍCIA: {data_pub}\nTÍTULO DO ARTIGO: {titulo}\nCONTEÚDO: {conteudo}\n")
             
         return "\n---\n".join(contextos_str), noticias
 
@@ -111,20 +114,21 @@ def ask_rag():
     pergunta = body['question']
     
     try:
-        # 1. Recupera as informações de contexto do Neo4j
-        contexto_str, lista_noticias = recuperar_contexto_neo4j(pergunta, top_k=3)
+        # 1. Recupera as informações de contexto do Neo4j (agora traz o top 5 mais recente)
+        contexto_str, lista_noticias = recuperar_contexto_neo4j(pergunta, top_k=5)
         
         if not contexto_str:
             return {"answer": "Não possuo informações suficientes no banco de dados para responder a essa pergunta.", "sources_used": []}
             
+        import datetime
+        hoje = datetime.datetime.now().strftime("%Y-%m-%d")
+        
         # 2. Formata o prompt seguindo as regras do Qwen (ChatML)
         # É crucial dar a instrução do sistema (System Prompt) amarrando o modelo ao contexto
         mensagens = [
             {
                 "role": "system", 
-                "content": "Você é um analista jornalístico TOTALMENTE IMPARCIAL. RESPONDA APENAS USANDO OS FATOS DO CONTEXTO FORNECIDO. NUNCA INVENTE. NUNCA USE SEU CONHECIMENTO PRÉVIO. Se não achar a resposta exata no contexto, diga: 'Não sei'."
-                # "content": "Você é um analista jornalístico TOTALMENTE IMPARCIAL. RESPONDA APENAS USANDO OS FATOS DO CONTEXTO FORNECIDO. NUNCA INVENTE. NUNCA USE SEU CONHECIMENTO PRÉVIO. Se não achar a resposta exata no contexto, diga: 'Não sei'."
-                # "content": "Você é um analista jornalístico TOTALMENTE IMPARCIAL. Apresente os fatos de forma neutra e objetiva, NUNCA tomando partido ou emitindo opiniões. RESPONDA APENAS USANDO OS FATOS DO CONTEXTO. NUNCA INVENTE. Se não achar a resposta, diga: 'Não sei'."
+                "content": f"Você é um analista jornalístico TOTALMENTE IMPARCIAL. HOJE É DIA {hoje}. RESPONDA APENAS USANDO OS FATOS DO CONTEXTO FORNECIDO. Avalie a 'DATA DA NOTÍCIA' para responder perguntas sobre eventos de 'hoje' ou recentes. NUNCA INVENTE."
             },
             {
                 "role": "user", 
